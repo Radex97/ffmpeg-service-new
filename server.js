@@ -10,7 +10,7 @@ const bodyParser = require('body-parser');
 // ------------------------------
 const { google } = require('googleapis');
 // Definiere den Pfad zur Credentials-Datei (die Datei MUSS im Ordner "credentials" liegen und in der .gitignore stehen!)
-const serviceAccountPath = path.join(__dirname, 'credentials', 'client_secret_432588095707-...apps.googleusercontent.com.json');
+const serviceAccountPath = path.join(__dirname, 'credentials', 'client_secret_432588095707-rnaoogmtoplqsfi15tif91man5v3vv1g.apps.googleusercontent.com.json');
 if (!fs.existsSync(serviceAccountPath)) {
   throw new Error('Die Credentials-Datei wurde nicht gefunden.');
 }
