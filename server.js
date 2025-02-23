@@ -129,7 +129,7 @@ app.post('/create-video', async (req, res) => {
     for (let i = 0; i < pairs.length; i++) {
       const outputVideo = path.join(uploadFolder, `video${i + 1}.mp4`);
       videoParts.push(outputVideo);
-      // Bild wird geloopt, bis das Audio endet (-shortest)
+      // Das Bild wird geloopt, bis das Audio endet (-shortest)
       const cmd = `ffmpeg -y -loop 1 -i "${imagePaths[i]}" -i "${audioPaths[i]}" -c:v libx264 -c:a aac -b:a 192k -shortest -pix_fmt yuv420p "${outputVideo}"`;
       console.log(`Erstelle Teilvideo ${i + 1}: ${cmd}`);
       await execPromise(cmd);
@@ -235,7 +235,8 @@ app.post('/create-single-video', async (req, res) => {
  *   "videoURL5": "https://...",
  *   "videoURL6": "https://..."
  * }
- * Lädt die sechs Videos herunter und fügt sie nahtlos zu einem finalen Video zusammen.
+ * Lädt die sechs Videos herunter und fügt sie nahtlos zu einem finalen Video zusammen,
+ * wobei die Videos neu kodiert werden, um eine exakte Synchronisation von Bild und Ton zu gewährleisten.
  */
 app.post('/merge-videos', async (req, res) => {
   try {
@@ -257,7 +258,8 @@ app.post('/merge-videos', async (req, res) => {
     const listFile = path.join(uploadFolder, 'merge_list.txt');
     fs.writeFileSync(listFile, downloadedVideos.map(v => `file '${v}'`).join('\n'));
     const finalMergePath = path.join(uploadFolder, 'final_merged_video.mp4');
-    const cmd = `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${finalMergePath}"`;
+    // Neu kodieren, damit die Zeitstempel neu gesetzt werden und Bild & Ton exakt hintereinander laufen
+    const cmd = `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c:v libx264 -c:a aac -b:a 192k "${finalMergePath}"`;
     console.log(`Führe Zusammenfügen der Videos aus: ${cmd}`);
     await execPromise(cmd);
     res.download(finalMergePath, 'final_merged_video.mp4', (downloadErr) => {
