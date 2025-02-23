@@ -38,7 +38,6 @@ if (process.env.GOOGLE_CREDENTIALS) {
   console.log('✅ Google Credentials aus Datei geladen.');
 }
 
-
 // Erstelle einen JWT-Client für die Google Drive API
 const jwtClient = new google.auth.JWT(
   serviceAccount.client_email,
@@ -92,74 +91,77 @@ async function downloadFile(url, destPath) {
  *   "imageURL2": "https://...",
  *   "audioURL2": "https://...",
  *   ...
- *   "imageURL6": "https://...",
- *   "audioURL6": "https://..."
  * }
+ *
+ * Ablauf:
+ * 1. Für jedes Bild-/Audio-Paar werden die Dateien heruntergeladen.
+ * 2. Es wird ein Teilvideo erstellt, bei dem das Bild so lange angezeigt wird,
+ *    wie das Audio dauert.
+ * 3. Alle Teilvideos werden zum finalen Video zusammengefügt.
  */
 app.post('/create-video', async (req, res) => {
   try {
-    // Überprüfe, ob alle benötigten Felder vorhanden sind
-    const expectedFields = [];
-    for (let i = 1; i <= 6; i++) {
-      expectedFields.push(`imageURL${i}`, `audioURL${i}`);
+    // Dynamisches Sammeln der Paare (solange imageURL und audioURL vorhanden sind)
+    let pairIndex = 1;
+    const pairs = [];
+    while (req.body[`imageURL${pairIndex}`] && req.body[`audioURL${pairIndex}`]) {
+      pairs.push(pairIndex);
+      pairIndex++;
     }
-    const missingFields = expectedFields.filter(field => !req.body[field]);
-    if (missingFields.length > 0) {
-      return res.status(400).json({
-        error: 'Es fehlen einige Felder im Request-Body.',
-        missingFields
-      });
+
+    if (pairs.length === 0) {
+      return res.status(400).json({ error: "Keine gültigen Bild/Audio-Paare im Request-Body gefunden." });
     }
-    
-    // Erstelle Arrays für die lokalen Dateipfade
+
+    // Arrays für lokale Dateipfade
     const imagePaths = [];
     const audioPaths = [];
-    
-    // Lade alle Dateien von den übergebenen URLs herunter
-    for (let i = 1; i <= 6; i++) {
+
+    // Herunterladen der Dateien
+    for (const i of pairs) {
       const imageUrl = req.body[`imageURL${i}`];
       const audioUrl = req.body[`audioURL${i}`];
-      
+
       const imgPath = path.join(uploadFolder, `image${i}.png`);
       const audPath = path.join(uploadFolder, `audio${i}.mp3`);
-      
+
       console.log(`Lade Bild ${i} von URL: ${imageUrl}`);
       await downloadFile(imageUrl, imgPath);
       console.log(`Lade Audio ${i} von URL: ${audioUrl}`);
       await downloadFile(audioUrl, audPath);
-      
+
       imagePaths.push(imgPath);
       audioPaths.push(audPath);
     }
-    
-    // Erstelle für jedes Bild-Audio-Paar ein kurzes Teilvideo
+
+    // Erstellen von Teilvideos für jedes Bild-/Audio-Paar
     const videoParts = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < pairs.length; i++) {
       const outputVideo = path.join(uploadFolder, `video${i + 1}.mp4`);
       videoParts.push(outputVideo);
-      
-      // FFmpeg-Befehl: Das Bild wird als statisches Bild (Loop) genutzt, bis das Audio endet.
+
+      // Der Befehl sorgt dafür, dass das Bild (durch -loop 1) so lange wiederholt wird,
+      // bis das Audio (durch -shortest) endet.
       const cmd = `ffmpeg -y -loop 1 -i "${imagePaths[i]}" -i "${audioPaths[i]}" -c:v libx264 -c:a aac -b:a 192k -shortest -pix_fmt yuv420p "${outputVideo}"`;
-      console.log(`Erstelle Teilvideo ${i+1}: ${cmd}`);
+      console.log(`Erstelle Teilvideo ${i + 1}: ${cmd}`);
       await execPromise(cmd);
     }
-    
+
     // Erstelle eine Liste der Teilvideos zum Zusammenfügen
     const listFile = path.join(uploadFolder, 'list.txt');
     fs.writeFileSync(listFile, videoParts.map(v => `file '${v}'`).join('\n'));
-    
+
     // Füge alle Teilvideos zu einem finalen Video zusammen
     const finalVideo = path.join(uploadFolder, 'final_video.mp4');
     const concatCmd = `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${finalVideo}"`;
     console.log("Führe Concatenation aus:", concatCmd);
     await execPromise(concatCmd);
-    
-    // Sende das finale Video als Download zurück
+
+    // Sende das finale Video als Download zurück und lösche anschließend die temporären Dateien
     res.download(finalVideo, 'final_video.mp4', (downloadErr) => {
       if (downloadErr) {
         console.error('Fehler beim Senden des Videos:', downloadErr);
       }
-      // Optional: Alle temporären Dateien löschen
       const filesToDelete = [...imagePaths, ...audioPaths, ...videoParts, listFile, finalVideo];
       filesToDelete.forEach(filePath => {
         fs.unlink(filePath, (err) => {
@@ -169,7 +171,7 @@ app.post('/create-video', async (req, res) => {
         });
       });
     });
-    
+
   } catch (error) {
     console.error("Fehler im /create-video Endpoint:", error);
     res.status(500).json({ error: error.message });
@@ -189,6 +191,7 @@ app.get('/ffmpeg-version', (req, res) => {
   });
 });
 
+// Starte den Server
 app.listen(port, () => {
   console.log(`FFmpeg-Service läuft auf Port ${port}`);
 });
