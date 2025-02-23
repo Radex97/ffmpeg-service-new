@@ -28,7 +28,6 @@ if (process.env.GOOGLE_CREDENTIALS) {
     throw new Error('❌ Fehler beim Parsen der GOOGLE_CREDENTIALS Umgebungsvariable.');
   }
 } else {
-  // Fallback: Datei laden (nur lokal, falls die Variable nicht gesetzt ist)
   const serviceAccountPath = path.join(__dirname, 'credentials', 'client_secret.json');
   if (!fs.existsSync(serviceAccountPath)) {
     throw new Error('❌ Die Credentials-Datei wurde nicht gefunden und GOOGLE_CREDENTIALS ist nicht gesetzt.');
@@ -76,6 +75,13 @@ async function downloadFile(url, destPath) {
   fs.writeFileSync(destPath, buffer);
   console.log(`Datei von ${url} heruntergeladen in ${destPath}`);
   return destPath;
+}
+
+// Diese Funktion ermittelt die Dauer eines Videos (in Sekunden) mittels ffprobe
+async function getVideoDuration(filePath) {
+  const cmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`;
+  const durationStr = await execPromise(cmd);
+  return parseFloat(durationStr);
 }
 
 // ------------------------------
@@ -162,6 +168,7 @@ app.post('/create-video', async (req, res) => {
  *   "audioURL": "https://..."
  * }
  * Erstellt ein Video, bei dem das Bild für die Dauer des Audios angezeigt wird.
+ * Anschließend wird das Video um 2,3 Sekunden am Ende gekürzt.
  */
 app.post('/create-single-video', async (req, res) => {
   try {
@@ -171,7 +178,7 @@ app.post('/create-single-video', async (req, res) => {
     }
     const imagePath = path.join(uploadFolder, 'single_image.png');
     const audioPath = path.join(uploadFolder, 'single_audio.mp3');
-    const videoPath = path.join(uploadFolder, 'single_video.mp4');
+    let videoPath = path.join(uploadFolder, 'single_video.mp4');
     console.log(`Lade Bild von URL: ${imageURL}`);
     await downloadFile(imageURL, imagePath);
     console.log(`Lade Audio von URL: ${audioURL}`);
@@ -179,6 +186,24 @@ app.post('/create-single-video', async (req, res) => {
     const cmd = `ffmpeg -y -loop 1 -i "${imagePath}" -i "${audioPath}" -c:v libx264 -c:a aac -b:a 192k -shortest -pix_fmt yuv420p "${videoPath}"`;
     console.log(`Erstelle Einzelvideo: ${cmd}`);
     await execPromise(cmd);
+
+    // Video trimmen: Entferne die letzten 2,3 Sekunden
+    const originalDuration = await getVideoDuration(videoPath);
+    const newDuration = originalDuration - 2.3;
+    if (newDuration > 0) {
+      const trimmedVideoPath = path.join(uploadFolder, 'single_video_trimmed.mp4');
+      const trimCmd = `ffmpeg -y -i "${videoPath}" -t ${newDuration} -c copy "${trimmedVideoPath}"`;
+      console.log(`Trimpe das Video auf ${newDuration} Sekunden: ${trimCmd}`);
+      await execPromise(trimCmd);
+      // Altes Video löschen und Variable aktualisieren
+      fs.unlink(videoPath, (err) => {
+        if (err) {
+          console.warn('Konnte das ursprüngliche Video nicht löschen:', videoPath, err);
+        }
+      });
+      videoPath = trimmedVideoPath;
+    }
+
     res.download(videoPath, 'single_video.mp4', (downloadErr) => {
       if (downloadErr) {
         console.error('Fehler beim Senden des Videos:', downloadErr);
@@ -205,7 +230,9 @@ app.post('/create-single-video', async (req, res) => {
  * {
  *   "videoURL1": "https://...",
  *   "videoURL2": "https://...",
- *   ...
+ *   "videoURL3": "https://...",
+ *   "videoURL4": "https://...",
+ *   "videoURL5": "https://...",
  *   "videoURL6": "https://..."
  * }
  * Lädt die sechs Videos herunter und fügt sie nahtlos zu einem finalen Video zusammen.
