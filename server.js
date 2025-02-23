@@ -20,7 +20,6 @@ if (!fs.existsSync(uploadFolder)) {
 
 // Google Credentials einlesen
 let serviceAccount;
-
 if (process.env.GOOGLE_CREDENTIALS) {
   try {
     serviceAccount = JSON.parse(process.env.GOOGLE_CREDENTIALS);
@@ -82,9 +81,10 @@ async function downloadFile(url, destPath) {
 // ------------------------------
 // Endpunkte
 // ------------------------------
+
 /**
  * POST /create-video
- * Erwartet einen JSON-Body mit Feldern:
+ * Erwartet einen JSON-Body mit Bild- und Audio-URLs in der Form:
  * {
  *   "imageURL1": "https://...",
  *   "audioURL1": "https://...",
@@ -92,76 +92,53 @@ async function downloadFile(url, destPath) {
  *   "audioURL2": "https://...",
  *   ...
  * }
- *
- * Ablauf:
- * 1. Für jedes Bild-/Audio-Paar werden die Dateien heruntergeladen.
- * 2. Es wird ein Teilvideo erstellt, bei dem das Bild so lange angezeigt wird,
- *    wie das Audio dauert.
- * 3. Alle Teilvideos werden zum finalen Video zusammengefügt.
+ * Hier werden jeweils Teilvideos erstellt, die dann zusammengefügt werden.
  */
 app.post('/create-video', async (req, res) => {
   try {
-    // Dynamisches Sammeln der Paare (solange imageURL und audioURL vorhanden sind)
     let pairIndex = 1;
     const pairs = [];
     while (req.body[`imageURL${pairIndex}`] && req.body[`audioURL${pairIndex}`]) {
       pairs.push(pairIndex);
       pairIndex++;
     }
-
     if (pairs.length === 0) {
       return res.status(400).json({ error: "Keine gültigen Bild/Audio-Paare im Request-Body gefunden." });
     }
-
-    // Arrays für lokale Dateipfade
     const imagePaths = [];
     const audioPaths = [];
-
-    // Herunterladen der Dateien
     for (const i of pairs) {
       const imageUrl = req.body[`imageURL${i}`];
       const audioUrl = req.body[`audioURL${i}`];
-
       const imgPath = path.join(uploadFolder, `image${i}.png`);
       const audPath = path.join(uploadFolder, `audio${i}.mp3`);
-
       console.log(`Lade Bild ${i} von URL: ${imageUrl}`);
       await downloadFile(imageUrl, imgPath);
       console.log(`Lade Audio ${i} von URL: ${audioUrl}`);
       await downloadFile(audioUrl, audPath);
-
       imagePaths.push(imgPath);
       audioPaths.push(audPath);
     }
-
-    // Erstellen von Teilvideos für jedes Bild-/Audio-Paar
     const videoParts = [];
     for (let i = 0; i < pairs.length; i++) {
       const outputVideo = path.join(uploadFolder, `video${i + 1}.mp4`);
       videoParts.push(outputVideo);
-
-      // Der Befehl sorgt dafür, dass das Bild (durch -loop 1) so lange wiederholt wird,
-      // bis das Audio (durch -shortest) endet.
+      // Bild wird geloopt, bis das Audio endet (-shortest)
       const cmd = `ffmpeg -y -loop 1 -i "${imagePaths[i]}" -i "${audioPaths[i]}" -c:v libx264 -c:a aac -b:a 192k -shortest -pix_fmt yuv420p "${outputVideo}"`;
       console.log(`Erstelle Teilvideo ${i + 1}: ${cmd}`);
       await execPromise(cmd);
     }
-
-    // Erstelle eine Liste der Teilvideos zum Zusammenfügen
     const listFile = path.join(uploadFolder, 'list.txt');
     fs.writeFileSync(listFile, videoParts.map(v => `file '${v}'`).join('\n'));
-
-    // Füge alle Teilvideos zu einem finalen Video zusammen
     const finalVideo = path.join(uploadFolder, 'final_video.mp4');
     const concatCmd = `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${finalVideo}"`;
     console.log("Führe Concatenation aus:", concatCmd);
     await execPromise(concatCmd);
-
-    // Sende das finale Video als Download zurück und lösche anschließend die temporären Dateien
     res.download(finalVideo, 'final_video.mp4', (downloadErr) => {
       if (downloadErr) {
         console.error('Fehler beim Senden des Videos:', downloadErr);
       }
+      // Aufräumen der temporären Dateien
       const filesToDelete = [...imagePaths, ...audioPaths, ...videoParts, listFile, finalVideo];
       filesToDelete.forEach(filePath => {
         fs.unlink(filePath, (err) => {
@@ -171,9 +148,106 @@ app.post('/create-video', async (req, res) => {
         });
       });
     });
-
   } catch (error) {
     console.error("Fehler im /create-video Endpoint:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /create-single-video
+ * Erwartet einen JSON-Body mit:
+ * {
+ *   "imageURL": "https://...",
+ *   "audioURL": "https://..."
+ * }
+ * Erstellt ein Video, bei dem das Bild für die Dauer des Audios angezeigt wird.
+ */
+app.post('/create-single-video', async (req, res) => {
+  try {
+    const { imageURL, audioURL } = req.body;
+    if (!imageURL || !audioURL) {
+      return res.status(400).json({ error: "Es müssen sowohl imageURL als auch audioURL angegeben werden." });
+    }
+    const imagePath = path.join(uploadFolder, 'single_image.png');
+    const audioPath = path.join(uploadFolder, 'single_audio.mp3');
+    const videoPath = path.join(uploadFolder, 'single_video.mp4');
+    console.log(`Lade Bild von URL: ${imageURL}`);
+    await downloadFile(imageURL, imagePath);
+    console.log(`Lade Audio von URL: ${audioURL}`);
+    await downloadFile(audioURL, audioPath);
+    const cmd = `ffmpeg -y -loop 1 -i "${imagePath}" -i "${audioPath}" -c:v libx264 -c:a aac -b:a 192k -shortest -pix_fmt yuv420p "${videoPath}"`;
+    console.log(`Erstelle Einzelvideo: ${cmd}`);
+    await execPromise(cmd);
+    res.download(videoPath, 'single_video.mp4', (downloadErr) => {
+      if (downloadErr) {
+        console.error('Fehler beim Senden des Videos:', downloadErr);
+      }
+      // Temporäre Dateien löschen
+      const filesToDelete = [imagePath, audioPath, videoPath];
+      filesToDelete.forEach(filePath => {
+        fs.unlink(filePath, (err) => {
+          if (err) {
+            console.warn('Konnte Datei nicht löschen:', filePath, err);
+          }
+        });
+      });
+    });
+  } catch (error) {
+    console.error("Fehler im /create-single-video Endpoint:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /merge-videos
+ * Erwartet einen JSON-Body mit den Feldern:
+ * {
+ *   "videoURL1": "https://...",
+ *   "videoURL2": "https://...",
+ *   ...
+ *   "videoURL6": "https://..."
+ * }
+ * Lädt die sechs Videos herunter und fügt sie nahtlos zu einem finalen Video zusammen.
+ */
+app.post('/merge-videos', async (req, res) => {
+  try {
+    const videoUrls = [];
+    for (let i = 1; i <= 6; i++) {
+      const url = req.body[`videoURL${i}`];
+      if (!url) {
+        return res.status(400).json({ error: `videoURL${i} fehlt im Request-Body.` });
+      }
+      videoUrls.push(url);
+    }
+    const downloadedVideos = [];
+    for (let i = 0; i < videoUrls.length; i++) {
+      const videoPath = path.join(uploadFolder, `merge_video${i + 1}.mp4`);
+      console.log(`Lade Video ${i + 1} von URL: ${videoUrls[i]}`);
+      await downloadFile(videoUrls[i], videoPath);
+      downloadedVideos.push(videoPath);
+    }
+    const listFile = path.join(uploadFolder, 'merge_list.txt');
+    fs.writeFileSync(listFile, downloadedVideos.map(v => `file '${v}'`).join('\n'));
+    const finalMergePath = path.join(uploadFolder, 'final_merged_video.mp4');
+    const cmd = `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${finalMergePath}"`;
+    console.log(`Führe Zusammenfügen der Videos aus: ${cmd}`);
+    await execPromise(cmd);
+    res.download(finalMergePath, 'final_merged_video.mp4', (downloadErr) => {
+      if (downloadErr) {
+        console.error('Fehler beim Senden des zusammengefügten Videos:', downloadErr);
+      }
+      const filesToDelete = [...downloadedVideos, listFile, finalMergePath];
+      filesToDelete.forEach(filePath => {
+        fs.unlink(filePath, (err) => {
+          if (err) {
+            console.warn('Konnte Datei nicht löschen:', filePath, err);
+          }
+        });
+      });
+    });
+  } catch (error) {
+    console.error("Fehler im /merge-videos Endpoint:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -191,7 +265,6 @@ app.get('/ffmpeg-version', (req, res) => {
   });
 });
 
-// Starte den Server
 app.listen(port, () => {
   console.log(`FFmpeg-Service läuft auf Port ${port}`);
 });
